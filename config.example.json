@@ -1,0 +1,8 @@
+{
+    "base_url": "https://www.example.com",
+    "keywords": ["风景", "自然", "高清"],
+    "max_images": 50,
+    "save_dir": "./downloads",
+    "delay": 1.0,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
