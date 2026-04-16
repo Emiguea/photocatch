@@ -592,7 +592,7 @@ class ImageCrawler:
         self.logger.info(f"=" * 60)
         self.logger.info(f"开始搜索关键词: {keyword}")
         self.logger.info(f"使用搜索引擎模式: {engine}")
-        self.logger.info(f="=" * 60)
+        self.logger.info("=" * 60)
         
         for page in range(1, self.max_pages + 1):
             if not self.is_running:
