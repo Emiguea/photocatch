@@ -577,8 +577,41 @@ class ImageCrawler:
             response.raise_for_status()
             return response
             
+        except requests.exceptions.SSLError as e:
+            error_msg = str(e)[:150]
+            self.logger.error(f"SSL证书验证失败: {error_msg}")
+            self.logger.error("=" * 50)
+            self.logger.error("⚠️ 这是 SSL 证书验证错误！")
+            self.logger.error("")
+            self.logger.error("可能的原因：")
+            self.logger.error("  1. 目标网站使用自签名证书")
+            self.logger.error("  2. 目标网站证书已过期")
+            self.logger.error("  3. 目标网站证书域名不匹配")
+            self.logger.error("")
+            self.logger.error("解决方案：")
+            self.logger.error("  1. 如果是内网/测试服务器，可以禁用 SSL 验证")
+            self.logger.error("  2. 取消勾选 GUI 中的 'SSL证书验证' 选项")
+            self.logger.error("  3. 注意：禁用 SSL 验证会有安全风险！")
+            self.logger.error("=" * 50)
+            return None
+            
+        except requests.exceptions.Timeout as e:
+            self.logger.error(f"请求超时: {str(e)[:80]}")
+            self.logger.error("提示：可以尝试增加 '请求延迟' 或检查网络连接")
+            return None
+            
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error(f"连接错误: {str(e)[:100]}")
+            self.logger.error("提示：请检查网络连接和目标网站是否可访问")
+            return None
+            
         except requests.RequestException as e:
-            self.logger.error(f"请求失败: {str(e)[:100]}")
+            error_str = str(e)[:120]
+            if 'SSL' in error_str or 'certificate' in error_str.lower():
+                self.logger.error(f"SSL相关错误: {error_str}")
+                self.logger.error("提示：如果是证书问题，可以考虑禁用 SSL 验证")
+            else:
+                self.logger.error(f"请求失败: {error_str}")
             return None
 
     def _is_valid_image(self, img_url):
@@ -1037,15 +1070,22 @@ class ImageCrawlerApp:
         ssl_frame.grid(row=opt_row, column=0, columnspan=7, sticky=tk.W, pady=5, padx=5)
         
         self.verify_ssl_var = tk.BooleanVar(value=True)
+        self.verify_ssl_var.trace_add('write', self._on_ssl_setting_change)
+        
         self.verify_ssl_check = ttk.Checkbutton(
             ssl_frame, 
-            text="SSL证书验证 (禁用后可访问证书有问题的HTTPS站点)", 
+            text="🔒 SSL证书验证 (默认启用，安全推荐)", 
             variable=self.verify_ssl_var
         )
         self.verify_ssl_check.pack(side=tk.LEFT, padx=5)
         
-        ssl_hint = ttk.Label(ssl_frame, text="(默认启用，访问内网/自签名证书站点可禁用)", font=('Arial', 8), foreground='gray')
-        ssl_hint.pack(side=tk.LEFT, padx=10)
+        ssl_warning = ttk.Label(
+            ssl_frame, 
+            text="⚠️ 禁用会有安全风险，仅用于访问内网/自签名证书站点", 
+            font=('Arial', 9), 
+            foreground='red'
+        )
+        ssl_warning.pack(side=tk.LEFT, padx=10)
         
         row += 1
         
@@ -1138,6 +1178,35 @@ class ImageCrawlerApp:
             if self.crawl_thread and self.crawl_thread.is_alive():
                 self.root.after(100, self._update_progress)
     
+    def _on_ssl_setting_change(self, *args):
+        current_value = self.verify_ssl_var.get()
+        
+        if not current_value:
+            warning_msg = (
+                "⚠️ 安全警告：您即将禁用 SSL 证书验证！\n\n"
+                "禁用 SSL 证书验证会带来以下安全风险：\n"
+                "  • 可能遭受中间人攻击 (MITM)\n"
+                "  • 无法验证服务器身份\n"
+                "  • 数据传输可能被窃听或篡改\n\n"
+                "仅在以下情况才应该禁用：\n"
+                "  • 访问内网开发服务器\n"
+                "  • 访问使用自签名证书的站点\n"
+                "  • 您完全信任当前网络环境\n\n"
+                "确定要禁用 SSL 证书验证吗？"
+            )
+            
+            result = messagebox.askyesno(
+                "🔒 安全警告 - SSL 证书验证",
+                warning_msg,
+                icon=messagebox.WARNING
+            )
+            
+            if not result:
+                self.verify_ssl_var.set(True)
+                self._log_message("[INFO] 已取消禁用 SSL 证书验证（保持安全设置）")
+            else:
+                self._log_message("[WARNING] ⚠️ SSL 证书验证已禁用！请注意安全风险！")
+    
     def _start_crawl(self):
         url = self.url_entry.get().strip()
         keywords = self.keywords_entry.get().strip()
@@ -1158,6 +1227,31 @@ class ImageCrawlerApp:
         if not save_dir:
             messagebox.showerror("错误", "请选择保存目录")
             return
+        
+        if not verify_ssl:
+            final_warning = (
+                "⚠️ 最终确认：SSL 证书验证已禁用！\n\n"
+                "您确定要在禁用 SSL 证书验证的情况下开始采集吗？\n\n"
+                "风险提示：\n"
+                "  • 中间人攻击可能导致数据泄露\n"
+                "  • 无法确认服务器的真实身份\n"
+                "  • 敏感信息可能被窃取\n\n"
+                "仅在以下情况继续：\n"
+                "  • 您完全信任当前网络\n"
+                "  • 访问的是内网/测试服务器\n\n"
+                "确定要继续吗？"
+            )
+            
+            result = messagebox.askyesno(
+                "🔒 最终确认 - SSL 安全警告",
+                final_warning,
+                icon=messagebox.WARNING
+            )
+            
+            if not result:
+                self.verify_ssl_var.set(True)
+                messagebox.showinfo("已取消", "已恢复安全设置（启用 SSL 证书验证）")
+                return
         
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
