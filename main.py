@@ -36,6 +36,131 @@ class DebugLogger:
             self.log_callback(f"[✓] {message}")
 
 
+class ImageDeduplicator:
+    def __init__(self, logger=None):
+        self.logger = logger
+        self.md5_hashes = set()
+        self.phash_hashes = set()
+        self.duplicate_count = 0
+    
+    def compute_md5(self, content):
+        return hashlib.md5(content).hexdigest()
+    
+    def compute_phash(self, img, hash_size=8, highfreq_factor=4):
+        try:
+            img_size = hash_size * highfreq_factor
+            img = img.convert('L')
+            img = img.resize((img_size, img_size), Image.Resampling.LANCZOS)
+            
+            pixels = []
+            for row in range(img_size):
+                for col in range(img_size):
+                    pixels.append(img.getpixel((col, row)))
+            
+            dct = self._dct_2d(pixels, img_size)
+            
+            dct_low = []
+            for row in range(hash_size):
+                for col in range(hash_size):
+                    dct_low.append(dct[row * img_size + col])
+            
+            avg = sum(dct_low) / len(dct_low)
+            
+            hash_bits = []
+            for value in dct_low:
+                hash_bits.append('1' if value > avg else '0')
+            
+            hash_hex = ''.join(hash_bits)
+            hash_int = int(hash_hex, 2)
+            return hash_int
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"pHash计算失败: {e}")
+            return None
+    
+    def _dct_2d(self, pixels, size):
+        try:
+            import math
+            dct = [0.0] * (size * size)
+            
+            for u in range(size):
+                for v in range(size):
+                    sum_val = 0.0
+                    for i in range(size):
+                        for j in range(size):
+                            cos_u = math.cos((2 * i + 1) * u * math.pi / (2 * size))
+                            cos_v = math.cos((2 * j + 1) * v * math.pi / (2 * size))
+                            sum_val += pixels[i * size + j] * cos_u * cos_v
+                    
+                    cu = 1.0 / math.sqrt(2) if u == 0 else 1.0
+                    cv = 1.0 / math.sqrt(2) if v == 0 else 1.0
+                    dct[u * size + v] = cu * cv * sum_val / 4.0
+            
+            return dct
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"DCT计算失败: {e}")
+            return [0.0] * (size * size)
+    
+    def hamming_distance(self, hash1, hash2):
+        xor_result = hash1 ^ hash2
+        return bin(xor_result).count('1')
+    
+    def is_duplicate(self, content=None, img=None, method='md5', phash_threshold=5):
+        if method == 'md5' and content:
+            md5_hash = self.compute_md5(content)
+            if md5_hash in self.md5_hashes:
+                return True
+            self.md5_hashes.add(md5_hash)
+            return False
+        
+        elif method == 'phash' and img:
+            phash = self.compute_phash(img)
+            if phash is None:
+                return False
+            
+            for existing_hash in self.phash_hashes:
+                distance = self.hamming_distance(phash, existing_hash)
+                if distance <= phash_threshold:
+                    return True
+            
+            self.phash_hashes.add(phash)
+            return False
+        
+        elif method == 'both':
+            if content:
+                md5_hash = self.compute_md5(content)
+                if md5_hash in self.md5_hashes:
+                    return True
+                self.md5_hashes.add(md5_hash)
+            
+            if img:
+                phash = self.compute_phash(img)
+                if phash is not None:
+                    for existing_hash in self.phash_hashes:
+                        distance = self.hamming_distance(phash, existing_hash)
+                        if distance <= phash_threshold:
+                            return True
+                    self.phash_hashes.add(phash)
+            
+            return False
+        
+        return False
+    
+    def reset(self):
+        self.md5_hashes.clear()
+        self.phash_hashes.clear()
+        self.duplicate_count = 0
+    
+    def get_stats(self):
+        return {
+            'md5_count': len(self.md5_hashes),
+            'phash_count': len(self.phash_hashes),
+            'duplicate_count': self.duplicate_count
+        }
+
+
 class SearchEngineAdapter:
     @staticmethod
     def build_baidu_image_url_v2(keyword, page=1):
@@ -356,7 +481,8 @@ class ImageExtractor:
 class ImageCrawler:
     def __init__(self, base_url, keywords, max_images, save_dir, 
                  user_agent=None, delay=1.0, log_callback=None,
-                 search_engine='auto', max_pages=10, debug_mode=True):
+                 search_engine='auto', max_pages=10, debug_mode=True,
+                 deduplicate_method='md5', phash_threshold=5):
         self.base_url = base_url
         self.keywords = [k.strip() for k in keywords.split(',') if k.strip()]
         self.max_images = max_images
@@ -368,8 +494,11 @@ class ImageCrawler:
         self.search_engine = search_engine
         self.max_pages = max_pages
         self.debug_mode = debug_mode
+        self.deduplicate_method = deduplicate_method
+        self.phash_threshold = phash_threshold
         
         self.logger = DebugLogger(log_callback, debug_mode)
+        self.deduplicator = ImageDeduplicator(self.logger)
         
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -543,6 +672,22 @@ class ImageCrawler:
             except Exception as e:
                 self.logger.error(f"图片格式验证失败: {e}")
                 return False
+            
+            if self.deduplicate_method != 'none':
+                if self.deduplicator.is_duplicate(
+                    content=content, 
+                    img=img, 
+                    method=self.deduplicate_method,
+                    phash_threshold=self.phash_threshold
+                ):
+                    self.deduplicator.duplicate_count += 1
+                    method_name = {
+                        'md5': 'MD5',
+                        'phash': 'pHash',
+                        'both': 'MD5+pHash'
+                    }.get(self.deduplicate_method, self.deduplicate_method)
+                    self.logger.info(f"[去重] 检测到重复图片 ({method_name})，已跳过 (累计: {self.deduplicator.duplicate_count})")
+                    return False
             
             ext = img.format.lower() if img.format else 'jpg'
             if ext == 'jpeg':
@@ -838,6 +983,31 @@ class ImageCrawlerApp:
         
         opt_row += 1
         
+        ttk.Label(options_frame, text="去重方式:").grid(row=opt_row, column=0, sticky=tk.W, pady=5, padx=5)
+        dedup_frame = ttk.Frame(options_frame)
+        dedup_frame.grid(row=opt_row, column=1, columnspan=3, sticky=tk.W, pady=5, padx=5)
+        
+        self.dedup_var = tk.StringVar(value='md5')
+        dedup_methods = [
+            ("不启用", 'none'),
+            ("MD5 (精确)", 'md5'),
+            ("pHash (感知)", 'phash'),
+            ("MD5+pHash (双重)", 'both')
+        ]
+        
+        for text, value in dedup_methods:
+            ttk.Radiobutton(dedup_frame, text=text, value=value, variable=self.dedup_var).pack(side=tk.LEFT, padx=10)
+        
+        ttk.Label(options_frame, text="pHash阈值:").grid(row=opt_row, column=4, sticky=tk.W, pady=5, padx=20)
+        self.phash_threshold_var = tk.IntVar(value=5)
+        self.phash_threshold_spinbox = ttk.Spinbox(options_frame, from_=0, to=20, textvariable=self.phash_threshold_var, width=10)
+        self.phash_threshold_spinbox.grid(row=opt_row, column=5, sticky=tk.W, pady=5, padx=5)
+        
+        phash_hint = ttk.Label(options_frame, text="(越小越严格，建议3-8)", font=('Arial', 8))
+        phash_hint.grid(row=opt_row, column=6, sticky=tk.W, padx=5)
+        
+        opt_row += 1
+        
         ttk.Label(options_frame, text="保存目录:").grid(row=opt_row, column=0, sticky=tk.W, pady=5, padx=5)
         save_frame = ttk.Frame(options_frame)
         save_frame.grid(row=opt_row, column=1, columnspan=6, sticky=(tk.W, tk.E), pady=5, padx=5)
@@ -949,6 +1119,8 @@ class ImageCrawlerApp:
         engine = self.engine_var.get()
         max_pages = self.pages_var.get()
         debug_mode = self.debug_var.get()
+        deduplicate_method = self.dedup_var.get()
+        phash_threshold = self.phash_threshold_var.get()
         
         if not keywords:
             messagebox.showwarning("⚠️ 缺少关键词", "请输入关键词！\n\n例如: 猫咪,白菜,小狗,风景,汽车\n\n关键词用于搜索相关图片，必须填写。")
@@ -976,7 +1148,9 @@ class ImageCrawlerApp:
             log_callback=self._log_message,
             search_engine=engine,
             max_pages=max_pages,
-            debug_mode=debug_mode
+            debug_mode=debug_mode,
+            deduplicate_method=deduplicate_method,
+            phash_threshold=phash_threshold
         )
         
         def run_crawl():
