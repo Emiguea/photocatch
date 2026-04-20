@@ -7,11 +7,16 @@ import time
 import json
 import random
 import hashlib
+import warnings
 from urllib.parse import urljoin, urlparse, quote, unquote, parse_qs, urlencode
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 from PIL import Image
 from io import BytesIO
+
+warnings.filterwarnings('ignore', category=urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 
 
 class DebugLogger:
@@ -482,7 +487,8 @@ class ImageCrawler:
     def __init__(self, base_url, keywords, max_images, save_dir, 
                  user_agent=None, delay=1.0, log_callback=None,
                  search_engine='auto', max_pages=10, debug_mode=True,
-                 deduplicate_method='md5', phash_threshold=5):
+                 deduplicate_method='md5', phash_threshold=5,
+                 verify_ssl=True):
         self.base_url = base_url
         self.keywords = [k.strip() for k in keywords.split(',') if k.strip()]
         self.max_images = max_images
@@ -496,9 +502,13 @@ class ImageCrawler:
         self.debug_mode = debug_mode
         self.deduplicate_method = deduplicate_method
         self.phash_threshold = phash_threshold
+        self.verify_ssl = verify_ssl
         
         self.logger = DebugLogger(log_callback, debug_mode)
         self.deduplicator = ImageDeduplicator(self.logger)
+        
+        if not verify_ssl:
+            self.logger.info("[SSL] SSL证书验证已禁用（verify=False）")
         
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -547,14 +557,16 @@ class ImageCrawler:
                     headers=self.headers, 
                     timeout=timeout, 
                     stream=True,
-                    allow_redirects=True
+                    allow_redirects=True,
+                    verify=self.verify_ssl
                 )
             else:
                 response = requests.get(
                     url, 
                     headers=self.headers, 
                     timeout=timeout,
-                    allow_redirects=True
+                    allow_redirects=True,
+                    verify=self.verify_ssl
                 )
             
             if self.debug_mode:
@@ -1019,6 +1031,22 @@ class ImageCrawlerApp:
         self.browse_button = ttk.Button(save_frame, text="浏览", command=self._browse_save_dir)
         self.browse_button.grid(row=0, column=1, padx=5)
         
+        opt_row += 1
+        
+        ssl_frame = ttk.Frame(options_frame)
+        ssl_frame.grid(row=opt_row, column=0, columnspan=7, sticky=tk.W, pady=5, padx=5)
+        
+        self.verify_ssl_var = tk.BooleanVar(value=True)
+        self.verify_ssl_check = ttk.Checkbutton(
+            ssl_frame, 
+            text="SSL证书验证 (禁用后可访问证书有问题的HTTPS站点)", 
+            variable=self.verify_ssl_var
+        )
+        self.verify_ssl_check.pack(side=tk.LEFT, padx=5)
+        
+        ssl_hint = ttk.Label(ssl_frame, text="(默认启用，访问内网/自签名证书站点可禁用)", font=('Arial', 8), foreground='gray')
+        ssl_hint.pack(side=tk.LEFT, padx=10)
+        
         row += 1
         
         button_frame = ttk.Frame(main_frame)
@@ -1121,6 +1149,7 @@ class ImageCrawlerApp:
         debug_mode = self.debug_var.get()
         deduplicate_method = self.dedup_var.get()
         phash_threshold = self.phash_threshold_var.get()
+        verify_ssl = self.verify_ssl_var.get()
         
         if not keywords:
             messagebox.showwarning("⚠️ 缺少关键词", "请输入关键词！\n\n例如: 猫咪,白菜,小狗,风景,汽车\n\n关键词用于搜索相关图片，必须填写。")
@@ -1150,7 +1179,8 @@ class ImageCrawlerApp:
             max_pages=max_pages,
             debug_mode=debug_mode,
             deduplicate_method=deduplicate_method,
-            phash_threshold=phash_threshold
+            phash_threshold=phash_threshold,
+            verify_ssl=verify_ssl
         )
         
         def run_crawl():
