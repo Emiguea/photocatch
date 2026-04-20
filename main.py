@@ -8,7 +8,7 @@ import json
 import random
 import hashlib
 import warnings
-from urllib.parse import urljoin, urlparse, quote, unquote, parse_qs, urlencode
+from urllib.parse import urljoin, urlparse, urlencode
 import requests
 import urllib3
 from bs4 import BeautifulSoup
@@ -551,23 +551,17 @@ class ImageCrawler:
             if self.debug_mode:
                 self.logger.debug(f"请求URL: {url[:80]}{'...' if len(url) > 80 else ''}")
             
+            request_params = {
+                'headers': self.headers,
+                'timeout': timeout,
+                'allow_redirects': True,
+                'verify': self.verify_ssl
+            }
+            
             if stream:
-                response = requests.get(
-                    url, 
-                    headers=self.headers, 
-                    timeout=timeout, 
-                    stream=True,
-                    allow_redirects=True,
-                    verify=self.verify_ssl
-                )
-            else:
-                response = requests.get(
-                    url, 
-                    headers=self.headers, 
-                    timeout=timeout,
-                    allow_redirects=True,
-                    verify=self.verify_ssl
-                )
+                request_params['stream'] = True
+            
+            response = requests.get(url, **request_params)
             
             if self.debug_mode:
                 self.logger.debug(f"响应状态码: {response.status_code}")
@@ -914,6 +908,15 @@ class ImageCrawler:
         
         self.logger.info("=" * 60)
         self.logger.info(f"爬取完成! 共下载 {self.downloaded_count} 张图片")
+        
+        if self.deduplicate_method != 'none':
+            stats = self.deduplicator.get_stats()
+            self.logger.info(f"去重统计: 跳过 {stats['duplicate_count']} 张重复图片")
+            if stats['md5_count'] > 0:
+                self.logger.info(f"  - MD5哈希: {stats['md5_count']} 个唯一值")
+            if stats['phash_count'] > 0:
+                self.logger.info(f"  - pHash哈希: {stats['phash_count']} 个唯一值")
+        
         self.logger.info("=" * 60)
         return self.downloaded_count
 
